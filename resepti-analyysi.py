@@ -1,5 +1,5 @@
 import pandas as pd
-
+from collections import defaultdict
 
 # start data 1995, ....,  2009
 
@@ -43,8 +43,12 @@ import pandas as pd
 
 class Converter():
 
-    def __init__(self, ref_year=2008):
-        data = pd.read_csv("data/consumer_price_index.csv", sep=",", comment="#", header=0, names=["year", "desc", "value"])
+    def __init__(self, ref_year=1995):
+        data = pd.read_csv("data/consumer_price_index.csv", sep=",",
+                           comment="#", header=0,
+                           names=["year", "desc", "value"],
+                           dtype={'year': int, "desc": str, "value":float}
+                           )
         convert_dict = {}
 
         self.ref_year = ref_year
@@ -69,9 +73,7 @@ class Converter():
         return value/self.convert_dict[year]
 
 
-def get_atc_label(atc_code):
-    atc_classes = [["A10A"], ["A10B", "A10X"]]
-    atc_class_labels = ["A10A", "A10_others"]
+def get_atc_label(atc_code, atc_classes, atc_class_labels):
     res = set()
     for atc_subc, acl in zip(atc_classes, atc_class_labels):
         for atc_start in atc_subc:
@@ -82,8 +84,6 @@ def get_atc_label(atc_code):
         return None
     else:
         return list(res)[0]
-
-
 
 
 if __name__ == "__main__":
@@ -100,6 +100,10 @@ if __name__ == "__main__":
         dp+"kela_reseptilaakkeet_2005-2009_15.11.2010.csv",
     ]
 
+    # the original atc_classes
+    # the corresponding groups we assigne them to
+    atc_classes = [["A10A"], ["A10B", "A10X"]]
+    atc_class_labels = ["A10A", "A10_others"]
 
     # combine original datasets
     datasets = []
@@ -120,57 +124,95 @@ if __name__ == "__main__":
             "Year",
             "filter_"
         ]
-        if not "1995"in fname:
+        dtypes = {
+            "Jnro": int,
+            "Multiple": str,
+            "SAIR": str,
+            "LAJI": str,
+            "VNRO": str,
+            "KUST": float,
+            "KORV": float,
+            "ATC": str,
+            "KAKORV": str,
+            "ostopv": str,
+            "plkm": int,
+            "OstoDate": str,
+            "Year": int,
+            "filter_": str
+            }
+
+        usecols = ["Jnro", "KUST", "KORV", "plkm", "Year"]
+        # filter_ is only in 1995
+        if not "1995" in fname:
             names = names[:-1]
-        datasets.append(pd.read_csv(fname, sep=";", names=names))
+            dtypes.pop("filter_")
+        print fname
+        # skiprows = 1 -> skip header row (names are specified)
+        df = pd.read_csv(fname, sep=";", names=names, skiprows=1)#, nrows=1000)#, usecols=usecols)
+        datasets.append(df)
 
     dataset = pd.concat(datasets, ignore_index=True)
 
-    atc_classes = [["A10A"], ["A10B", "A10X"]]
-    atc_class_labels = ["A10A", "A10_others"]
 
+    # dictionary from labels to classes
     atc_class_label_to_classes = \
         dict(keys=atc_class_labels, values=atc_classes)
 
+    # variables we are interested in each transaction
+    # (these are summed to) yearly values
     variables = ["plkm", "KUST", "KORV"]
+
+    year_acl_var_to_column_name = dict()
 
     # get column headers
     columns = ["Jnro"] # id label
     years = range(1995,2009+1) # +1 to get also year 2009
+
     for year in years:
         for acl in atc_class_labels:
             for v in variables:
                 col = str(year)+"_"+acl+"_"+v
                 columns.append(col)
-    # print columns
+                year_acl_var_to_column_name[(year,acl, v)] = col
+    print columns
 
-    # 1. get data for jnr
-    jnro_label = dataset.columns[-1]
+    res_dict_dict = defaultdict(lambda: defaultdict(lambda:0))
 
-    res_dict = []
-
-    # jnro->year->atc->
-    print dataset.columns
-
-    years = dataset[jnro_label]
+    # keys should be: [jnro][(year, acl, v)]
 
     gb = dataset.groupby(['Jnro', 'Year'])
 
-    result_ds = \
-        pd.DataFrame(data=None, index=None, columns=columns, dtype=int)
-
+    # convert money to values
+    c = Converter()
 
     for (jnro, year), rows in gb:
+        year = int(year)
+        print jnro, year
         for row_i, row in rows.iterrows():
-            if get_atc_label:
-                print gb
+            acl = get_atc_label(row.ATC, atc_classes, atc_class_labels)
+            if acl:
+                kust_value = c.money_to_value(float(row.KUST), year)
+                korv_value = c.money_to_value(float(row.KORV), year)
+                plkm_value = int(row.plkm)
+                vals = [kust_value, korv_value, plkm_value]
+                kust_key = (year, acl, "KUST")
+                korv_key = (year, acl, "KORV")
+                plkm_key = (year, acl, "plkm")
+                keys = [kust_key, korv_key, plkm_key]
+                for key, val in zip(keys, vals):
+                    res_dict_dict[jnro][key] += val
 
-        # for row_i, row in rows.iterrows():
-        #     break
-        # break
 
+    res_df = pd.DataFrame(columns=columns)
+    # index=res_dict_dict.keys(), dtype=[str]+[float]*(len(columns)-1),
 
-    # 2. loop over jnro data
-    # 3. store data to dataframe
-    # (4. sort by jnro)
+    # res_dict is ready, need to transform it into a dataframe still
+    for jnro, jnro_dict in res_dict_dict.items():
+        row_dict = {'Jnro': int(jnro)}
+        for key, col_name in year_acl_var_to_column_name.items():
+            row_dict[col_name] = jnro_dict[key]
+        print row_dict
+        res_df = res_df.append(row_dict, ignore_index=True)
 
+    print res_df
+    res_df.to_csv("data/yearly_A10_index_and_euro_corrected.csv")
