@@ -44,6 +44,7 @@ from collections import defaultdict
 class Converter():
 
     def __init__(self, ref_year=1995):
+        self.ref_year = ref_year
         data = pd.read_csv("data/consumer_price_index.csv", sep=",",
                            comment="#", header=0,
                            names=["year", "desc", "value"],
@@ -51,26 +52,24 @@ class Converter():
                            )
         convert_dict = {}
 
-        self.ref_year = ref_year
-        norm = float(data[data['year']==ref_year]['value'])
-
-
         for row_index, row in data.iterrows():
-            # print row[0], row[1]
-            # for i in row:
-            #     print i
             year = row['year']
             value = row['value']
             # take care of euro
             eur_to_fim = 5.94573
             if year < 2002:
-                value = value / eur_to_fim
-            convert_dict[year] = value/float(norm)
-            self.convert_dict = convert_dict
+                value = value  * eur_to_fim
+            convert_dict[year] = 1./value
+
+        # normalize
+        norm = convert_dict[ref_year]
+        for key, value in convert_dict.items():
+            convert_dict[key] = value/norm
+        self.convert_dict = convert_dict
 
     def money_to_value(self, value, year):
         assert year in self.convert_dict
-        return value/self.convert_dict[year]
+        return value*self.convert_dict[year]
 
 
 def get_atc_label(atc_code, atc_classes, atc_class_labels):
@@ -87,7 +86,11 @@ def get_atc_label(atc_code, atc_classes, atc_class_labels):
 
 
 if __name__ == "__main__":
-    c = Converter(2008)
+    ref_year = 2010
+    c = Converter(ref_year)
+    years = range(1995, 2013)
+    for year in years:
+        print year, 1, "->", c.money_to_value(1, year)
 
 
     # print c.money_to_value(100, 1998)
@@ -146,7 +149,6 @@ if __name__ == "__main__":
         if not "1995" in fname:
             names = names[:-1]
             dtypes.pop("filter_")
-        print fname
         # skiprows = 1 -> skip header row (names are specified)
         df = pd.read_csv(fname, sep=";", names=names, skiprows=1)#, nrows=1000)#, usecols=usecols)
         datasets.append(df)
@@ -174,26 +176,26 @@ if __name__ == "__main__":
                 col = str(year)+"_"+acl+"_"+v
                 columns.append(col)
                 year_acl_var_to_column_name[(year,acl, v)] = col
-    print columns
 
     res_dict_dict = defaultdict(lambda: defaultdict(lambda:0))
 
     # keys should be: [jnro][(year, acl, v)]
-
     gb = dataset.groupby(['Jnro', 'Year'])
 
     # convert money to values
-    c = Converter()
+    c = Converter(ref_year)
 
     for (jnro, year), rows in gb:
         year = int(year)
-        print jnro, year
+        # print jnro, year
         for row_i, row in rows.iterrows():
             acl = get_atc_label(row.ATC, atc_classes, atc_class_labels)
             if acl:
                 kust_value = c.money_to_value(float(row.KUST), year)
                 korv_value = c.money_to_value(float(row.KORV), year)
                 plkm_value = int(row.plkm)
+                if (int(jnro) == 70680) and year == 1995:
+                    print plkm_value, row.ATC
                 vals = [kust_value, korv_value, plkm_value]
                 kust_key = (year, acl, "KUST")
                 korv_key = (year, acl, "KORV")
@@ -211,8 +213,6 @@ if __name__ == "__main__":
         row_dict = {'Jnro': int(jnro)}
         for key, col_name in year_acl_var_to_column_name.items():
             row_dict[col_name] = jnro_dict[key]
-        print row_dict
         res_df = res_df.append(row_dict, ignore_index=True)
 
-    print res_df
-    res_df.to_csv("data/yearly_A10_index_and_euro_corrected.csv")
+    res_df.to_csv("data/yearly_sums_A10_index_and_euro_corrected.csv")
